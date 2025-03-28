@@ -1,13 +1,16 @@
 ## FedSDAF 
+
 FedSDAF: Federated Source Domain Awareness Framework 
  
 # Note 
+
 The remaining code components are currently being organized and will be released progressively. This includes:
 - Client-side domain adaptation algorithms 
 - Multi-tier aggregation protocols 
 - Extended experiment configurations 
  
 ## Requirements 
+
 ```bash 
 torch>=1.12.0 
 torchvision>=0.13.0 
@@ -19,12 +22,16 @@ pillow>=9.0.0
 ```
  
 ## Datasets 
-PACS 
+
+PACS
 OfficeHome 
 TerraInc 
 DomainNet 
  
 ## Acknowledgments 
+
 Part of our code is borrowed from the following repositories:
+
 FedDG-GA [https://github.com/MediaBrain-SJTU/FedDG-GA]
+
 We thank to the authors for releasing their codes. Please also consider citing their works.
