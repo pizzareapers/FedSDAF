@@ -34,3 +34,5 @@ DomainNet
 Part of our code is borrowed from the following repositories:
 ﻿
 FedDG-GA [https://github.com/MediaBrain-SJTU/FedDG-GA]
+
+We thank to the authors for releasing their codes. Please also consider citing their works.
