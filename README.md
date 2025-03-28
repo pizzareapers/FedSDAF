@@ -1,7 +1,3 @@
-## FedSDAF 
-
-FedSDAF: Federated Source Domain Awareness Framework 
- 
 # Note 
 
 The remaining code components are currently being organized and will be released progressively.
