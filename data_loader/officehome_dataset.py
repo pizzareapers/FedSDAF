@@ -43,13 +43,7 @@ split_dict = {
 
 
 def generate_dataset_splits(root_path):
-    """
-    Generate dataset splits for OfficeHome dataset if they don't exist.
-    This creates train, validation, and test split files for each domain.
-
-    Args:
-        root_path: Root path of the dataset
-    """
+    """Generate dataset splits for OfficeHome dataset."""
     # Create splits directory if it doesn't exist
     splits_dir = os.path.join(root_path, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
@@ -73,9 +67,6 @@ def generate_dataset_splits(root_path):
             print(f"Split files for {domain_name} already exist. Skipping.")
             continue
 
-        # Dictionary to store images by class
-        class_images = defaultdict(list)
-
         # Find all class directories
         class_dirs = [d for d in os.listdir(domain_path) if os.path.isdir(os.path.join(domain_path, d))]
         class_dirs.sort()  # Ensure consistent class ordering
@@ -83,9 +74,16 @@ def generate_dataset_splits(root_path):
         # Create class to label mapping
         class_to_label = {cls: idx for idx, cls in enumerate(class_dirs)}
 
-        # Find all images in each class
+        # Create empty lists for final splits
+        train_images = []
+        val_images = []
+        all_images = []  # Will contain all images for test set
+
+        # Process each class separately
         for class_name in class_dirs:
             class_path = os.path.join(domain_path, class_name)
+            class_label = class_to_label[class_name]
+            class_images = []
 
             # Find all images in this class directory
             for root, _, files in os.walk(class_path):
@@ -93,29 +91,32 @@ def generate_dataset_splits(root_path):
                     if file.lower().endswith(('.jpg', '.jpeg', '.png')):
                         # Get relative path for image
                         img_path = os.path.join(domain_name, class_name, file)
-                        class_images[class_name].append(img_path)
+                        class_images.append((img_path, class_label))
 
-        # Create a list of all images with their labels
-        all_images = []
-        for class_name, images in class_images.items():
-            label = class_to_label[class_name]
-            for img_path in images:
-                all_images.append((img_path, label))
+            # Add all class images to the all_images list
+            all_images.extend(class_images)
 
-        # Shuffle the images
-        random.seed(42)  # For reproducibility
-        random.shuffle(all_images)
+            # Shuffle this class's images with fixed seed for reproducibility
+            random.seed(42 + class_to_label[class_name])  # Different seed for each class
+            random.shuffle(class_images)
 
-        train_split = int(len(all_images) * 0.7)
+            # Split this class into train/val proportionally
+            train_split_idx = int(len(class_images) * 0.7)
 
-        train_images = all_images[:train_split]
-        val_images = all_images[train_split:]
-        test_images = all_images
+            # Add to our final splits
+            train_images.extend(class_images[:train_split_idx])
+            val_images.extend(class_images[train_split_idx:])
+
+        # Shuffle the final train and val sets
+        random.seed(42)
+        random.shuffle(train_images)
+        random.shuffle(val_images)
+
         # Write split files
         splits = {
             'train': train_images,
             'val': val_images,
-            'test': test_images
+            'test': all_images  # Using ALL images for test as requested
         }
 
         for split_name, images in splits.items():
