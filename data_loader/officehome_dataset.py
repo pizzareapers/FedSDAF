@@ -44,7 +44,6 @@ split_dict = {
 
 def generate_dataset_splits(root_path):
     """Generate dataset splits for OfficeHome dataset."""
-    # Create splits directory if it doesn't exist
     splits_dir = os.path.join(root_path, 'splits')
     os.makedirs(splits_dir, exist_ok=True)
 
@@ -57,7 +56,6 @@ def generate_dataset_splits(root_path):
 
         print(f"Processing domain: {domain_name}")
 
-        # Check if split files already exist
         all_splits_exist = all(
             os.path.exists(os.path.join(splits_dir, f"{domain_name}_{split}.txt"))
             for split in split_dict.values()
@@ -67,17 +65,14 @@ def generate_dataset_splits(root_path):
             print(f"Split files for {domain_name} already exist. Skipping.")
             continue
 
-        # Find all class directories
         class_dirs = [d for d in os.listdir(domain_path) if os.path.isdir(os.path.join(domain_path, d))]
-        class_dirs.sort()  # Ensure consistent class ordering
+        class_dirs.sort()
 
-        # Create class to label mapping
         class_to_label = {cls: idx for idx, cls in enumerate(class_dirs)}
 
-        # Create empty lists for final splits
         train_images = []
         val_images = []
-        all_images = []  # Will contain all images for test set
+        all_images = []
 
         # Process each class separately
         for class_name in class_dirs:
@@ -92,31 +87,25 @@ def generate_dataset_splits(root_path):
                         # Get relative path for image
                         img_path = os.path.join(domain_name, class_name, file)
                         class_images.append((img_path, class_label))
-
-            # Add all class images to the all_images list
             all_images.extend(class_images)
 
-            # Shuffle this class's images with fixed seed for reproducibility
-            random.seed(42 + class_to_label[class_name])  # Different seed for each class
+            random.seed(42 + class_to_label[class_name])
             random.shuffle(class_images)
 
-            # Split this class into train/val proportionally
             train_split_idx = int(len(class_images) * 0.7)
 
-            # Add to our final splits
             train_images.extend(class_images[:train_split_idx])
             val_images.extend(class_images[train_split_idx:])
 
-        # Shuffle the final train and val sets
+
         random.seed(42)
         random.shuffle(train_images)
         random.shuffle(val_images)
 
-        # Write split files
         splits = {
             'train': train_images,
             'val': val_images,
-            'test': all_images  # Using ALL images for test as requested
+            'test': all_images
         }
 
         for split_name, images in splits.items():
@@ -141,10 +130,8 @@ class OfficeHome_SingleDomain():
         self.root_path = root_path
         self.split = split
 
-        # Create splits directory path
         splits_dir = os.path.join(root_path, 'splits')
 
-        # Generate splits if they don't exist
         if not os.path.exists(splits_dir) or not os.path.exists(
                 os.path.join(splits_dir, f"{self.domain_name}_{split_dict[self.split]}.txt")):
             print(f"Split files not found. Generating dataset splits...")
@@ -158,10 +145,8 @@ class OfficeHome_SingleDomain():
 
         self.transform = train_transform if train_transform is not None else transform_test
 
-        # Preload image paths and labels
         imgs, labels = self._read_txt_cached(self.split_file, self.root_path)
 
-        # Choose dataset implementation based on caching preference
         if use_cache:
             self.dataset = CachedMetaDataset(
                 imgs, labels, self.domain_label, self.transform, cache_size=cache_size
@@ -170,14 +155,13 @@ class OfficeHome_SingleDomain():
             self.dataset = MetaDataset(imgs, labels, self.domain_label, self.transform)
 
     @staticmethod
-    @lru_cache(maxsize=0)  # Cache results to avoid repeated file parsing
+    @lru_cache(maxsize=0)
     def _read_txt_cached(txt_path, root_path):
         imgs = []
         labels = []
         with open(txt_path, 'r') as f:
             txt_component = f.readlines()
 
-        # Preprocess all file paths at once
         for line_txt in txt_component:
             line_txt = line_txt.strip().split(' ')
             imgs.append(os.path.join(root_path, line_txt[0]))
