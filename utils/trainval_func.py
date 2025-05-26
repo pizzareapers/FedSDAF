@@ -21,6 +21,7 @@ def site_evaluation(model, dataloader):
     with torch.no_grad():
         for imgs, labels, domain_labels, in dataloader:
             imgs = imgs.cuda()
+            labels = labels.cuda()
             output = model(imgs)
             correct_count, count, loss = classification_update(output, labels)
             total_correct_count += correct_count
@@ -30,15 +31,14 @@ def site_evaluation(model, dataloader):
     return results_dict
 
 
-def test_func(comm_round, test_domain, model_dict, log_file, args, dataloader_dict, train_domain_list, note):
+def test_func(comm_round, test_domain, model_dict, log_file, args, dataloader_dict, source_domain_list, note):
+    """Modified to only test using source domain models on target domain"""
     test_dataloader = dataloader_dict[test_domain]['test']
-    client_domain = train_domain_list.copy()
-    client_domain.remove(test_domain)
+    
+    results = {}  # Dictionary to store results for each source domain
 
-    results = {}  # Dictionary to store results for each train domain
-
-    for k in client_domain:
-        model = model_dict[k]
+    for source_domain in source_domain_list:
+        model = model_dict[source_domain]
         model = model.cuda()
         model.eval()
         total_correct_count = 0
@@ -47,14 +47,15 @@ def test_func(comm_round, test_domain, model_dict, log_file, args, dataloader_di
         with torch.no_grad():
             for imgs, labels, domain_labels, in test_dataloader:
                 imgs = imgs.cuda()
+                labels = labels.cuda()
                 output = model(imgs)
                 correct_count, count, loss = classification_update(output, labels)
                 total_correct_count += correct_count
                 total_count += count
                 total_loss += loss
         results_dict = classification_results(total_correct_count, total_count, total_loss)
-        log_file.info(f'{note} Round: {comm_round:3d} | Train Domain: {k} | Test Domain: {test_domain} | Acc: {results_dict["acc"] * 100:.2f}%')
-        results[k] = results_dict["acc"]
+        log_file.info(f'{note} Round: {comm_round:3d} | Source Domain: {source_domain} | Test Domain: {test_domain} | Acc: {results_dict["acc"] * 100:.2f}%')
+        results[source_domain] = results_dict["acc"]
 
     return results
 
@@ -101,13 +102,12 @@ def adjust_model_prefix(state_dict, model):
         return state_dict
 
 
-
 def load_from_checkpoint(checkpoint_path, client_dual_model, client_single_model, dual_model_dict, single_model_dict,
                          client_dual_optimizer, client_single_optimizer, dual_optimizer_dict, single_optimizer_dict,
                          dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c,
-                         weight_dict, train_domain_list, log_file):
+                         weight_dict, source_domain_list, log_file):
     """
-    Load models, optimizers, schedulers, and control variables from checkpoint
+    Modified to load models only for source domains (excludes target domain)
     """
     if not os.path.exists(checkpoint_path):
         log_file.info(f"Checkpoint not found at {checkpoint_path}. Starting from beginning.")
@@ -139,8 +139,8 @@ def load_from_checkpoint(checkpoint_path, client_dual_model, client_single_model
         state_dict = adjust_model_prefix(checkpoint['global_single_model'], client_single_model)
         client_single_model.load_state_dict(state_dict)
 
-    # Load domain-specific models, optimizers, schedulers, and control variables
-    for domain_name in train_domain_list:
+    # Load domain-specific models, optimizers, schedulers, and control variables (only for source domains)
+    for domain_name in source_domain_list:
         if f'dual_model_{domain_name}' in checkpoint:
             state_dict = adjust_model_prefix(checkpoint[f'dual_model_{domain_name}'], dual_model_dict[domain_name])
             dual_model_dict[domain_name].load_state_dict(state_dict)
@@ -178,12 +178,13 @@ def load_from_checkpoint(checkpoint_path, client_dual_model, client_single_model
     return start_round, weight_dict, dual_c, single_c, dual_ci_dict, single_ci_dict
 
 
-
 def save_checkpoint_for_resume(args, round_idx, client_dual_model, client_single_model, dual_model_dict, single_model_dict,
                               client_dual_optimizer, client_single_optimizer, dual_optimizer_dict, single_optimizer_dict,
                               dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c,
                               weight_dict, save_path):
-
+    """
+    Modified to save checkpoints only for source domains
+    """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
     checkpoint = {
@@ -197,6 +198,7 @@ def save_checkpoint_for_resume(args, round_idx, client_dual_model, client_single
         'client_single_optimizer': client_single_optimizer.state_dict()
     }
 
+    # Only save source domain models (exclude target domain)
     for domain_name in dual_model_dict.keys():
         checkpoint[f'dual_model_{domain_name}'] = dual_model_dict[domain_name].state_dict()
         checkpoint[f'single_model_{domain_name}'] = single_model_dict[domain_name].state_dict()
