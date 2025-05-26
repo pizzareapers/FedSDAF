@@ -32,7 +32,7 @@ def site_evaluation(model, dataloader):
 
 
 def test_func(comm_round, test_domain, model_dict, log_file, args, dataloader_dict, source_domain_list, note):
-    """Modified to only test using source domain models on target domain"""
+
     test_dataloader = dataloader_dict[test_domain]['test']
     
     results = {}  # Dictionary to store results for each source domain
@@ -106,9 +106,7 @@ def load_from_checkpoint(checkpoint_path, client_dual_model, client_single_model
                          client_dual_optimizer, client_single_optimizer, dual_optimizer_dict, single_optimizer_dict,
                          dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c,
                          weight_dict, source_domain_list, log_file):
-    """
-    Modified to load models only for source domains (excludes target domain)
-    """
+
     if not os.path.exists(checkpoint_path):
         log_file.info(f"Checkpoint not found at {checkpoint_path}. Starting from beginning.")
         return 0, weight_dict, dual_c, single_c, dual_ci_dict, single_ci_dict
@@ -182,9 +180,7 @@ def save_checkpoint_for_resume(args, round_idx, client_dual_model, client_single
                               client_dual_optimizer, client_single_optimizer, dual_optimizer_dict, single_optimizer_dict,
                               dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c,
                               weight_dict, save_path):
-    """
-    Modified to save checkpoints only for source domains
-    """
+
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
     checkpoint = {
