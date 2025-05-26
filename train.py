@@ -26,14 +26,14 @@ def get_argparse():
                         choices=['p', 'a', 'c', 's', 'r'], help='the domain name for testing')
     parser.add_argument('--batch_size', help='batch_size', type=int, default=128)
     parser.add_argument('--local_epochs', help='epochs number', type=int, default=30)
-    parser.add_argument('--comm', help='epochs number', type=int, default=200)
+    parser.add_argument('--comm', help='communication rounds', type=int, default=200)
     parser.add_argument('--lr', help='learning rate', type=float, default=0.001)
     parser.add_argument('--step_size', help='rate weight step', type=float, default=0.2)
     parser.add_argument("--lr_policy", type=str, default='step', choices=['step'],
                         help="learning rate scheduler policy")
     parser.add_argument("--fair", type=str, default='acc', choices=['acc', 'loss'],
                         help="the fairness metric for FedAvg")
-    parser.add_argument('--note', help='note of experimental settings', type=str, default='generalization_adjustment')
+    parser.add_argument('--note', help='note of experimental settings', type=str, default='domain_generalization')
     parser.add_argument('--display', help='display in controller', default=True, action='store_true')
     parser.add_argument('--resume', help='path to checkpoint to resume from', type=str,
                         default=None)
@@ -45,26 +45,29 @@ args = get_argparse()
 if args.dataset == 'pacs':
     from data_loader.pacs_dataset import PACS_FedDG
     dataobj = PACS_FedDG(test_domain=args.test_domain, batch_size=args.batch_size)
-    train_domain_list = ['p', 'a', 'c', 's']
+    all_domain_list = ['p', 'a', 'c', 's']
     num_classes = 7
 elif args.dataset == 'officehome':
     from data_loader.officehome_dataset import OfficeHome_FedDG
     dataobj = OfficeHome_FedDG(test_domain=args.test_domain, batch_size=args.batch_size)
-    train_domain_list = ['a', 'c', 'p', 'r']
+    all_domain_list = ['a', 'c', 'p', 'r']
     num_classes = 65
 elif args.dataset == 'vlcs':
     from data_loader.vlcs_dataset import VLCS_FedDG
     dataobj = VLCS_FedDG(test_domain=args.test_domain, batch_size=args.batch_size)
-    train_domain_list = ['v', 'l', 'c', 's']
+    all_domain_list = ['v', 'l', 'c', 's']
     num_classes = 5
 elif args.dataset == 'domainnet':
     from data_loader.domainnet_dataset import DomainNet_FedDG
     dataobj = DomainNet_FedDG(test_domain=args.test_domain, batch_size=args.batch_size)
-    train_domain_list = ['c', 'i', 'p', 'q', 'r', 's']
+    all_domain_list = ['c', 'i', 'p', 'q', 'r', 's']
     num_classes = 345
 else:
     raise ValueError(f"Dataset '{args.dataset}' not supported")
 
+# Source domains exclude the test domain
+source_domain_list = all_domain_list.copy()
+source_domain_list.remove(args.test_domain)
 
 
 def epoch_site_train(epochs, site_name, model_dual, model_single, optimizer_dual, optimizer_single, scheduler_dual,
@@ -110,7 +113,7 @@ def epoch_site_train(epochs, site_name, model_dual, model_single, optimizer_dual
         # Update model_single with mixed precision
         optimizer_single.zero_grad()
         scaler_single.scale(loss_single).backward()
-        scaler_single.step(optimizer_single, c_ci_single)  # Assuming optimizer.step() accepts c_ci_single
+        scaler_single.step(optimizer_single, c_ci_single)
         scaler_single.update()
 
         # Freeze model_single, update model_dual
@@ -186,7 +189,8 @@ def site_train(comm_rounds, site_name, args, model_dual, model_single, optimizer
     return site_single_gradients
 
 
-def GetFedModel(args, num_classes):
+def GetFedModel(args, num_classes, source_domains):
+    # Global models (trained on aggregated source domains)
     client_dual_model = DualAdapterViT(num_classes)
     client_single_model = SingleAdapterViT(num_classes)
 
@@ -196,11 +200,13 @@ def GetFedModel(args, num_classes):
     client_dual_model = nn.DataParallel(client_dual_model)
     client_single_model = nn.DataParallel(client_single_model)
 
+    # Domain-specific models (only for source domains)
     dual_model_dict = {}
     single_model_dict = {}
 
     dual_optimizer_dict = {}
     single_optimizer_dict = {}
+    
     client_dual_optimizer = Scaffold(
         [param for name, param in get_aware_adapter(client_dual_model).items()],
         lr=args.lr,
@@ -222,9 +228,8 @@ def GetFedModel(args, num_classes):
     dual_c = GenZeroParamList([param for name, param in get_aware_adapter(client_dual_model).items()])
     single_c = GenZeroParamList([param for name, param in get_invariant_adapter(client_single_model).items()])
 
-
-    for domain_name in train_domain_list:
-
+    # Only create models for source domains (exclude test domain)
+    for domain_name in source_domains:
         dual_model_dict[domain_name] = DualAdapterViT(num_classes)
         single_model_dict[domain_name] = SingleAdapterViT(num_classes)
 
@@ -238,7 +243,6 @@ def GetFedModel(args, num_classes):
             [param for name, param in get_aware_adapter(dual_model_dict[domain_name]).items()])
         single_ci_dict[domain_name] = GenZeroParamList(
             [param for name, param in get_invariant_adapter(single_model_dict[domain_name]).items()])
-
 
         dual_optimizer_dict[domain_name] = Scaffold(
             [param for name, param in get_aware_adapter(dual_model_dict[domain_name]).items()],
@@ -261,11 +265,58 @@ def GetFedModel(args, num_classes):
                                                                                  step_size=args.local_epochs * args.comm,
                                                                                  gamma=0.1)
 
-    return client_dual_model, client_single_model, dual_model_dict, single_model_dict, client_dual_optimizer, client_single_optimizer, dual_optimizer_dict, single_optimizer_dict, dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c
+    return (client_dual_model, client_single_model, dual_model_dict, single_model_dict,
+            client_dual_optimizer, client_single_optimizer, dual_optimizer_dict, single_optimizer_dict,
+            dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c)
+
+
+def test_on_target_domain(model_dict, dataloader_dict, target_domain, source_domains, log_file, comm_round, note=""):
+    """Test all source domain models on the target domain"""
+    test_dataloader = dataloader_dict[target_domain]['test']
+    results = {}
+    
+    log_file.info(f"\n===== {note} Testing on Target Domain: {target_domain} =====")
+    
+    best_acc = 0.0
+    best_model_domain = None
+    
+    for source_domain in source_domains:
+        model = model_dict[source_domain]
+        model = model.cuda()
+        model.eval()
+        
+        total_correct_count = 0
+        total_count = 0
+        total_loss = 0
+        
+        with torch.no_grad():
+            for imgs, labels, domain_labels in test_dataloader:
+                imgs = imgs.cuda()
+                labels = labels.cuda()
+                output = model(imgs)
+                correct_count, count, loss = classification_update(output, labels)
+                total_correct_count += correct_count
+                total_count += count
+                total_loss += loss
+        
+        results_dict = classification_results(total_correct_count, total_count, total_loss)
+        acc = results_dict["acc"]
+        results[source_domain] = acc
+        
+        if acc > best_acc:
+            best_acc = acc
+            best_model_domain = source_domain
+        
+        log_file.info(f'{note} Round: {comm_round:3d} | Source Domain: {source_domain} | Target Domain: {target_domain} | Acc: {acc * 100:.2f}%')
+    
+    log_file.info(f"Best performing source domain: {best_model_domain} with accuracy: {best_acc * 100:.2f}%")
+    log_file.info("=" * 60)
+    
+    return results, best_acc, best_model_domain
 
 
 def main():
-    file_name = 'FedSDAF_' + os.path.split(__file__)[1].replace('.py', '')
+    file_name = 'DomainGeneralization_' + os.path.split(__file__)[1].replace('.py', '')
 
     args = get_argparse()
 
@@ -274,30 +325,31 @@ def main():
     log_file = Get_Logger(file_name=log_dir + 'train.log', display=args.display)
     Save_Hyperparameter(log_dir, args)
 
+    log_file.info(f"Dataset: {args.dataset}")
+    log_file.info(f"Target Domain: {args.test_domain}")
+    log_file.info(f"Source Domains: {source_domain_list}")
+
     dataloader_dict, dataset_dict = dataobj.GetData()
 
-    # Initialize models, optimizers, etc.
+    # Initialize models, optimizers, etc. (only for source domains)
     (client_dual_model, client_single_model, dual_model_dict, single_model_dict,
      client_dual_optimizer, client_single_optimizer, dual_optimizer_dict, single_optimizer_dict,
-     dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c) = GetFedModel(args, num_classes)
+     dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c) = GetFedModel(args, num_classes, source_domain_list)
 
+    # Initialize weights only for source domains
     weight_dict = {}
     site_results_before_avg = {}
     site_results_after_avg = {}
-    for site_name in train_domain_list:
-        weight_dict[site_name] = 1.0/len(train_domain_list)
+    for site_name in source_domain_list:
+        weight_dict[site_name] = 1.0/len(source_domain_list)
         site_results_before_avg[site_name] = None
         site_results_after_avg[site_name] = None
 
-    # FedUpdate(dual_model_dict, client_dual_model)
     step_size_decay = args.step_size / args.comm
 
-    # Save best accuracy for each test domain
-    best_domain_acc = {}
-    best_domain_info = {}
-    for test_domain in train_domain_list:
-        best_domain_acc[test_domain] = 0.0
-        best_domain_info[test_domain] = {'round': 0, 'train_domain': '', 'acc': 0.0, 'phase': ''}
+    # Save best accuracy for target domain
+    best_target_acc = 0.0
+    best_target_info = {'round': 0, 'source_domain': '', 'acc': 0.0, 'phase': ''}
 
     # Load from checkpoint if resume path is provided
     start_round = 0
@@ -306,19 +358,20 @@ def main():
             args.resume, client_dual_model, client_single_model, dual_model_dict, single_model_dict,
             client_dual_optimizer, client_single_optimizer, dual_optimizer_dict, single_optimizer_dict,
             dual_scheduler_dict, single_scheduler_dict, dual_ci_dict, single_ci_dict, dual_c, single_c,
-            weight_dict, train_domain_list, log_file
+            weight_dict, source_domain_list, log_file
         )
 
-
     for i in range(start_round, args.comm + 1):
+        log_file.info(f"\n{'='*50}")
+        log_file.info(f"Communication Round: {i}")
+        log_file.info(f"{'='*50}")
 
         single_gradients = []
 
-        for domain_name in train_domain_list:
-
+        # Train only on source domains
+        for domain_name in source_domain_list:
             dual_c_ci = ListMinus(dual_c, dual_ci_dict[domain_name])
             single_c_ci = ListMinus(single_c, single_ci_dict[domain_name])
-            print(len(dataloader_dict[domain_name]['train']) * args.local_epochs)
 
             K = len(dataloader_dict[domain_name]['train']) * args.local_epochs
 
@@ -330,8 +383,10 @@ def main():
                                                dataloader_dict[domain_name]['train'], log_ten)
             single_gradients.append(site_single_gradients)
 
+            # Evaluate on validation set of source domain
             site_results_before_avg[domain_name] = site_evaluation(dual_model_dict[domain_name], dataloader_dict[domain_name]['val'])
 
+            # Update control variables
             dual_ci_dict[domain_name] = UpdateLocalControl(dual_c, dual_ci_dict[domain_name],
                                                            [param for name, param in
                                                             get_aware_adapter(client_dual_model).items()],
@@ -343,112 +398,91 @@ def main():
                                                              [param for name, param in get_invariant_adapter(
                                                                  single_model_dict[domain_name]).items()], K)
 
+        # Test on target domain before aggregation
+        before_avg_results, before_best_acc, before_best_domain = test_on_target_domain(
+            dual_model_dict, dataloader_dict, args.test_domain, source_domain_list, log_file, i, "Before Avg"
+        )
 
-        # Test all domains
-        log_file.info("\n===== Before Avg Domain Test =====")
-        before_avg_results = {}
-        for test_domain in train_domain_list:
-            before_avg_results[test_domain] = test_func(i, test_domain, dual_model_dict, log_file, args,
-                                                        dataloader_dict, train_domain_list, note='before_avg')
+        # Check if new best accuracy
+        if before_best_acc > best_target_acc:
+            best_target_acc = before_best_acc
+            best_target_info = {
+                'round': i,
+                'source_domain': before_best_domain,
+                'acc': before_best_acc,
+                'phase': 'before_avg'
+            }
+            # Save the best model
+            SaveCheckPoint(args, dual_model_dict[before_best_domain], args.comm,
+                           os.path.join(log_dir, 'checkpoints'),
+                           dual_optimizer_dict[before_best_domain],
+                           dual_scheduler_dict[before_best_domain],
+                           note=f'best_target_{args.test_domain}_dual')
+            SaveCheckPoint(args, single_model_dict[before_best_domain], args.comm,
+                           os.path.join(log_dir, 'checkpoints'),
+                           single_optimizer_dict[before_best_domain],
+                           single_scheduler_dict[before_best_domain],
+                           note=f'best_target_{args.test_domain}_single')
+            log_file.info(f'🏆 New Best Model for Target Domain {args.test_domain}! Round: {i}, Source Domain: {before_best_domain}, Phase: before_avg, Acc: {before_best_acc * 100:.2f}%')
 
-            # Check if new best accuracy for this test domain
-            for train_domain, acc in before_avg_results[test_domain].items():
-                if acc > best_domain_acc[test_domain]:
-                    best_domain_acc[test_domain] = acc
-                    best_domain_info[test_domain] = {
-                        'round': i,
-                        'train_domain': train_domain,
-                        'acc': acc,
-                        'phase': 'before_avg'
-                    }
-
-                    # Save the best model
-                    SaveCheckPoint(args, dual_model_dict[train_domain], args.comm,
-                                   os.path.join(log_dir, 'checkpoints'),
-                                   dual_optimizer_dict[train_domain],
-                                   dual_scheduler_dict[train_domain],
-                                   note=f'best_domain_{test_domain}_dual')
-                    SaveCheckPoint(args, single_model_dict[train_domain], args.comm,
-                                   os.path.join(log_dir, 'checkpoints'),
-                                   single_optimizer_dict[train_domain],
-                                   single_scheduler_dict[train_domain],
-                                   note=f'best_domain_{test_domain}_single')
-                    log_file.info(
-                        f'New Best Model for Test Domain {test_domain}! Round: {i}, Train Domain: {train_domain}, Phase: before_avg, Acc: {acc * 100:.2f}%')
-                    info = best_domain_info[test_domain]
-                    log_file.info(
-                        f"Test Domain: {test_domain} | Best Round: {info['round']} | Train Domain: {info['train_domain']} | Phase: {info['phase']} | Acc: {info['acc'] * 100:.2f}%")
-
-        log_file.info("===== Before Avg Test Complete =====")
-
-
+        # Federated aggregation
         dual_c = UpdateServerControl(dual_c, dual_ci_dict, weight_dict)
         single_c = UpdateServerControl(single_c, single_ci_dict, weight_dict)
 
         single_grads = aggregate(single_gradients, weight_dict)
-
         apply_grads([param for name, param in get_invariant_adapter(client_single_model).items()], single_grads,
                     client_single_optimizer, single_c)
 
-        for domain_name in train_domain_list:
+        # Update all source domain models with aggregated parameters
+        for domain_name in source_domain_list:
             single_model_dict[domain_name].load_state_dict(
                 client_single_model.state_dict(),
                 strict=True
             )
 
+        # Share invariant adapter parameters
         shared_adapter_params = get_invariant_adapter(client_single_model)
-        for domain_name in train_domain_list:
+        for domain_name in source_domain_list:
             for name, param in shared_adapter_params.items():
                 dual_model_dict[domain_name].state_dict()[name].copy_(param)
 
-
-        for domain_name in train_domain_list:
+        # Evaluate after aggregation
+        for domain_name in source_domain_list:
             site_results_after_avg[domain_name] = site_evaluation(dual_model_dict[domain_name], dataloader_dict[domain_name]['val'])
 
+        # Update weights
         weight_dict = refine_weight_dict_by_GA(weight_dict, site_results_before_avg, site_results_after_avg,
                                                args.step_size - (i - 1) * step_size_decay, fair_metric=args.fair)
 
         log_str = f'Round {i} FedAvg weight: {weight_dict}'
         log_file.info(log_str)
 
+        # Test on target domain after aggregation
+        after_avg_results, after_best_acc, after_best_domain = test_on_target_domain(
+            dual_model_dict, dataloader_dict, args.test_domain, source_domain_list, log_file, i, "After Avg"
+        )
 
-        # Test all domains
-        # Existing after_avg test
-        log_file.info("\n===== After Avg Domain Test =====")
-        after_avg_results = {}
-        for test_domain in train_domain_list:
-            after_avg_results[test_domain] = test_func(i, test_domain, dual_model_dict, log_file, args, dataloader_dict,
-                                                       train_domain_list, note='after_avg')
-
-            # Check if new best accuracy for this test domain
-            for train_domain, acc in after_avg_results[test_domain].items():
-                if acc > best_domain_acc[test_domain]:
-                    best_domain_acc[test_domain] = acc
-                    best_domain_info[test_domain] = {
-                        'round': i,
-                        'train_domain': train_domain,
-                        'acc': acc,
-                        'phase': 'after_avg'
-                    }
-
-                    # Save the best model
-                    SaveCheckPoint(args, dual_model_dict[train_domain], args.comm,
-                                   os.path.join(log_dir, 'checkpoints'),
-                                   dual_optimizer_dict[train_domain],
-                                   dual_scheduler_dict[train_domain],
-                                   note=f'best_domain_{test_domain}_dual')
-                    SaveCheckPoint(args, single_model_dict[train_domain], args.comm,
-                                   os.path.join(log_dir, 'checkpoints'),
-                                   single_optimizer_dict[train_domain],
-                                   single_scheduler_dict[train_domain],
-                                   note=f'best_domain_{test_domain}_single')
-
-                    log_file.info(
-                        f'New Best Model for Test Domain {test_domain}! Round: {i}, Train Domain: {train_domain}, Phase: after_avg, Acc: {acc * 100:.2f}%')
-                    info = best_domain_info[test_domain]
-                    log_file.info(
-                        f"Test Domain: {test_domain} | Best Round: {info['round']} | Train Domain: {info['train_domain']} | Phase: {info['phase']} | Acc: {info['acc'] * 100:.2f}%")
-        log_file.info("===== After Avg Test Complete =====")
+        # Check if new best accuracy after aggregation
+        if after_best_acc > best_target_acc:
+            best_target_acc = after_best_acc
+            best_target_info = {
+                'round': i,
+                'source_domain': after_best_domain,
+                'acc': after_best_acc,
+                'phase': 'after_avg'
+            }
+            # Save the best model
+            SaveCheckPoint(args, dual_model_dict[after_best_domain], args.comm,
+                           os.path.join(log_dir, 'checkpoints'),
+                           dual_optimizer_dict[after_best_domain],
+                           dual_scheduler_dict[after_best_domain],
+                           note=f'best_target_{args.test_domain}_dual')
+            SaveCheckPoint(args, single_model_dict[after_best_domain], args.comm,
+                           os.path.join(log_dir, 'checkpoints'),
+                           single_optimizer_dict[after_best_domain],
+                           single_scheduler_dict[after_best_domain],
+                           note=f'best_target_{args.test_domain}_single')
+            log_file.info(f'🏆 New Best Model for Target Domain {args.test_domain}! Round: {i}, Source Domain: {after_best_domain}, Phase: after_avg, Acc: {after_best_acc * 100:.2f}%')
 
         # Save checkpoint for resumption every ckpt_freq rounds
         if i % args.ckpt_freq == 0 or i == args.comm:
@@ -461,12 +495,18 @@ def main():
             )
             log_file.info(f"Saved checkpoint at round {i} to {save_path}")
 
-        # Print summary of the best performance for each domain at the end of each round
-        log_file.info("\n===== Current Best Performance Summary =====")
-        for test_domain in train_domain_list:
-            info = best_domain_info[test_domain]
-            log_file.info(
-                f"Test Domain: {test_domain} | Best Round: {info['round']} | Train Domain: {info['train_domain']} | Phase: {info['phase']} | Acc: {info['acc'] * 100:.2f}%")
+        # Print summary of the best performance 
+        log_file.info(f"\n📊 Current Best Performance Summary:")
+        info = best_target_info
+        log_file.info(f"Target Domain: {args.test_domain} | Best Round: {info['round']} | Best Source Domain: {info['source_domain']} | Phase: {info['phase']} | Acc: {info['acc'] * 100:.2f}%")
+
+    # Final summary
+    log_file.info(f"\n🎯 FINAL RESULTS:")
+    log_file.info(f"Dataset: {args.dataset}")
+    log_file.info(f"Target Domain: {args.test_domain}")
+    log_file.info(f"Source Domains: {source_domain_list}")
+    info = best_target_info
+    log_file.info(f"Best Target Domain Accuracy: {info['acc'] * 100:.2f}% (Round {info['round']}, Source Domain: {info['source_domain']}, Phase: {info['phase']})")
 
 
 if __name__ == '__main__':
