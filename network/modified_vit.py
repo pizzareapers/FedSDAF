@@ -13,6 +13,15 @@ class DualAdapterInjection(nn.Module):
         self.adapter_aware_down = nn.Linear(dim, dim // 4)
         self.adapter_aware_up = nn.Linear(dim // 4, dim)
         self.adapter_norm = nn.LayerNorm(dim)
+        self.num_heads = 8
+        self.num_heads = self.num_heads
+        self.head_dim = dim // self.num_heads
+        self.scale = self.head_dim ** -0.5
+        self.mhsa_query = nn.Linear(dim, dim)
+        self.mhsa_key = nn.Linear(dim, dim)
+        self.mhsa_value = nn.Linear(dim, dim)
+        self.mhsa_output = nn.Linear(dim, dim)
+        self.mhsa_norm = nn.LayerNorm(dim)
 
     def forward(self, x):
         invariant = self.adapter_invariant_down(x)
@@ -80,6 +89,16 @@ class SingleAdapterInjection(nn.Module):
         self.adapter_invariant_down = nn.Linear(dim, dim // 4)
         self.adapter_invariant_up = nn.Linear(dim // 4, dim)
         self.adapter_norm = nn.LayerNorm(dim)
+        self.num_heads = 8
+        self.num_heads = self.num_heads
+        self.head_dim = dim // self.num_heads
+        self.scale = self.head_dim ** -0.5
+        self.mhsa_query = nn.Linear(dim, dim)
+        self.mhsa_key = nn.Linear(dim, dim)
+        self.mhsa_value = nn.Linear(dim, dim)
+        self.mhsa_output = nn.Linear(dim, dim)
+        self.mhsa_norm = nn.LayerNorm(dim)
+
 
     def forward(self, x):
         invariant = self.adapter_invariant_down(x)
