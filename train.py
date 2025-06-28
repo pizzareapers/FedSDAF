@@ -320,7 +320,7 @@ def test_on_target_domain(model_dict, dataloader_dict, target_domain, source_dom
 
 
 def main():
-    file_name = 'DomainGeneralization_' + os.path.split(__file__)[1].replace('.py', '')
+    file_name = 'FedSDAF_' + os.path.split(__file__)[1].replace('.py', '')
 
     args = get_argparse()
 
